@@ -20,4 +20,6 @@ jobs:
         FEISHU_BASE_TOKEN: ${{ secrets.FEISHU_BASE_TOKEN }}
         FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
         RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       run: python main.py
