@@ -2,9 +2,8 @@ name: Sync WeChat RSS to Feishu
 
 on:
   schedule:
-    # Runs at 08:00 UTC (16:00 Beijing Time) every day
-    - cron: '0 8 * * *'
-  workflow_dispatch: # Allows manual trigger
+    - cron: '0 8 * * *' # 每天北京时间 16:00 运行
+  workflow_dispatch: # 允许手动运行
 
 jobs:
   sync:
@@ -17,7 +16,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11' # 升级到 3.11，避免警告
+        python-version: '3.11' # 使用新版 Python
 
     - name: Install dependencies
       run: |
@@ -26,7 +25,7 @@ jobs:
 
     - name: Run sync script
       env:
-        # 这里补全了所有需要的 Secrets！
+        # 传递所有 Secrets
         FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
         FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
         FEISHU_BASE_TOKEN: ${{ secrets.FEISHU_BASE_TOKEN }}
