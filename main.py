@@ -37,18 +37,19 @@ else:
 # --- Helper Functions ---
 
 def create_session_with_retries():
-    """创建一个带有重试机制和伪装头的 session"""
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     session.mount('http://', HTTPAdapter(max_retries=retries))
     session.mount('https://', HTTPAdapter(max_retries=retries))
+    # 伪装成浏览器 (非常重要)
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
     return session
 
 def send_feishu_notification(message):
-    """发送报错通知"""
     if not FEISHU_WEBHOOK_URL: return
     try:
         requests.post(FEISHU_WEBHOOK_URL, json={"msg_type": "text", "content": {"text": message}})
@@ -72,7 +73,7 @@ def get_tenant_access_token():
 def summarize_with_gemini(text):
     if not model or not text: return ""
     try:
-        # 截取前 8000 字防止超 Token
+        # 截取前 8000 字
         prompt = f"请用一句话概括这篇微信公众号文章的核心内容，直接输出结论，不要废话，50字以内：\n\n{text[:8000]}"
         response = model.generate_content(prompt)
         return response.text.strip()
@@ -82,6 +83,10 @@ def summarize_with_gemini(text):
 
 def create_feishu_doc(token, title, content):
     """创建飞书文档并写入内容"""
+    if not content or len(content) < 10:
+        print("DEBUG: Content too short, skipping doc creation.")
+        return ""
+
     print(f"Creating Feishu Doc: {title}...")
     session = create_session_with_retries()
     
@@ -102,21 +107,23 @@ def create_feishu_doc(token, title, content):
         # 2. 写入内容
         blocks_url = f"{feishu_api_base}/docx/v1/documents/{doc_id}/blocks/children"
         
-        # 简单清洗内容
+        # 简单清洗
         clean_content = re.sub(r'\n\s*\n', '\n\n', content)
-        # 分段写入
         text_chunks = [clean_content[i:i+3000] for i in range(0, len(clean_content), 3000)]
         
         children = []
         for chunk in text_chunks:
             children.append({
-                "block_type": 2, # Text block
+                "block_type": 2, 
                 "text": {"elements": [{"text_run": {"content": chunk}}]}
             })
             
         block_payload = {"children": children}
-        session.post(blocks_url, headers=headers, json=block_payload)
-        
+        # 写入操作
+        write_resp = session.post(blocks_url, headers=headers, json=block_payload)
+        if write_resp.json().get("code") != 0:
+             print(f"Error writing doc content: {write_resp.json()}")
+
         doc_url = f"https://feishu.cn/docx/{doc_id}"
         print(f"Doc created: {doc_url}")
         return doc_url
@@ -129,18 +136,29 @@ def fetch_wechat_content(url):
     """爬虫：抓取微信文章正文"""
     session = create_session_with_retries()
     try:
-        # 随机延迟，模拟人类
-        time.sleep(random.uniform(1, 3))
-        response = session.get(url, timeout=10)
+        # 随机延迟
+        time.sleep(random.uniform(2, 4))
+        response = session.get(url, timeout=15)
         soup = BeautifulSoup(response.content, "html.parser")
         
-        # 微信文章正文在 js_content
+        # 优先抓取 js_content
         content_div = soup.find("div", id="js_content")
+        text = ""
         if content_div:
-            return content_div.get_text(separator='\n', strip=True)
-        
-        # 兜底：获取全文
-        return soup.get_text(separator='\n', strip=True)
+            text = content_div.get_text(separator='\n', strip=True)
+            print(f"DEBUG: Fetched 'js_content', length: {len(text)}")
+        else:
+            # 兜底：抓取所有 p 标签
+            paragraphs = soup.find_all('p')
+            text = "\n".join([p.get_text(strip=True) for p in paragraphs])
+            print(f"DEBUG: Fetched all 'p' tags, length: {len(text)}")
+            
+            if len(text) < 50:
+                 # 终极兜底：整个 body
+                 text = soup.body.get_text(separator='\n', strip=True) if soup.body else ""
+                 print(f"DEBUG: Fetched body text, length: {len(text)}")
+
+        return text
     except Exception as e:
         print(f"Failed to fetch url {url}: {e}")
         return ""
@@ -191,33 +209,32 @@ def parse_feeds(feed_urls, existing_links, token):
             response = session.get(url, timeout=30)
             feed = feedparser.parse(response.content)
             
-            for entry in feed.entries:
+            # 限制每次只处理前 5 篇，防止额度爆炸
+            entries = feed.entries[:5] 
+            
+            for entry in entries:
                 link = entry.get("link", "")
-                # 去重
                 if link in existing_links: continue 
                 
                 existing_links.add(link)
                 title = entry.get("title", "No Title")
                 
-                # --- 1. 获取正文 (核心逻辑) ---
+                # --- 1. 获取正文 ---
                 content_text = ""
-                
-                # A. 优先从 RSS 获取
                 if hasattr(entry, 'content'):
                     content_text = clean_html_simple(entry.content[0].value)
                 else:
                     content_text = clean_html_simple(entry.get("summary", "") or entry.get("description", ""))
                 
-                # B. 如果 RSS 内容太短 (少于 100 字) 且有链接，启用爬虫抓取原文
+                # 爬虫逻辑
                 if len(content_text) < 100 and link:
                     print(f"DEBUG: Content too short ({len(content_text)}). Fetching original: {title}")
                     fetched_text = fetch_wechat_content(link)
                     if len(fetched_text) > len(content_text):
                         content_text = fetched_text
                 
-                # --- 2. 创建飞书文档 (新功能) ---
+                # --- 2. 创建飞书文档 ---
                 doc_link = ""
-                # 只有内容稍微丰富点才创建文档，避免空文档
                 if len(content_text) > 50:
                     doc_link = create_feishu_doc(token, title, content_text)
                 
@@ -228,13 +245,16 @@ def parse_feeds(feed_urls, existing_links, token):
                     ai_summary = summarize_with_gemini(content_text)
                     if not ai_summary:
                         ai_summary = content_text[:100] + "..."
+                    
+                    # === 关键修正：防止 429 ===
+                    print("Sleeping 12s to respect Gemini Rate Limit...")
+                    time.sleep(12) 
                 else:
                     ai_summary = content_text[:100] + "..."
 
                 pub_parsed = entry.get("published_parsed") or entry.get("updated_parsed")
                 pub_ts = int(time.mktime(pub_parsed) * 1000) if pub_parsed else int(time.time() * 1000)
 
-                # --- 4. 组装数据 ---
                 fields = {
                     "Title": title,
                     "Link": {"text": "原文链接", "link": link},
@@ -244,7 +264,6 @@ def parse_feeds(feed_urls, existing_links, token):
                     "Date": pub_ts
                 }
                 
-                # 如果生成了文档，填入 Doc Link
                 if doc_link:
                     fields["Doc Link"] = {"text": "飞书文档", "link": doc_link}
 
@@ -284,10 +303,8 @@ def batch_create_records(token, records):
             send_feishu_notification(f"⚠️ {error_msg}")
 
 def main():
-    # 检查 Secrets
     if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_BASE_TOKEN, FEISHU_TABLE_ID, RSS_FEEDS_ENV]):
         print("Error: Missing environment variables.")
-        send_feishu_notification("⚠️ GitHub Action 缺少环境变量配置，请检查 Secrets。")
         return
     
     print("Starting sync job...")
@@ -295,7 +312,6 @@ def main():
         token = get_tenant_access_token()
         print("Authenticated with Feishu.")
     except Exception as e:
-        # Auth 失败已在 get_tenant_access_token 里发送通知
         return
 
     print("Fetching existing records...")
@@ -303,8 +319,6 @@ def main():
     print(f"Found {len(existing_links)} existing records.")
     
     feeds = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
-    
-    # 开始处理 (传入 token 以便创建文档)
     new_records = parse_feeds(feeds, existing_links, token)
     
     if new_records:
