@@ -88,16 +88,18 @@ def create_feishu_doc(token, title, content):
         return ""
 
     print(f"Creating Feishu Doc: {title}...")
-    # ！！！这里不用 session 了，用 requests ！！！
     
-    # 1. 创建空文档
+    # 1. 创建空文档 (使用 requests 直接请求)
     create_url = f"{feishu_api_base}/docx/v1/documents"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {"title": title}
     
     try:
-        # 使用 requests 直接发请求
         resp = requests.post(create_url, headers=headers, json=payload)
+        
+        # --- 调试：打印飞书原始返回 ---
+        # print(f"DEBUG: Create Doc Response: {resp.text}") 
+        
         resp_json = resp.json()
         if resp_json.get("code") != 0:
             print(f"Error creating doc: {resp_json}")
@@ -108,22 +110,30 @@ def create_feishu_doc(token, title, content):
         # 2. 写入内容
         blocks_url = f"{feishu_api_base}/docx/v1/documents/{doc_id}/blocks/children"
         
-        clean_content = re.sub(r'\n\s*\n', '\n\n', content)
+        # 简单清洗内容，移除不可见字符
+        clean_content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', content)
+        clean_content = re.sub(r'\n\s*\n', '\n\n', clean_content)
+        
+        # 分段写入
         text_chunks = [clean_content[i:i+3000] for i in range(0, len(clean_content), 3000)]
         
         children = []
         for chunk in text_chunks:
             children.append({
-                "block_type": 2, 
+                "block_type": 2, # Text block
                 "text": {"elements": [{"text_run": {"content": chunk}}]}
             })
             
         block_payload = {"children": children}
-        # 使用 requests 直接发请求
         write_resp = requests.post(blocks_url, headers=headers, json=block_payload)
         
+        # --- 调试：打印写入返回 ---
+        # print(f"DEBUG: Write Block Response: {write_resp.text}")
+
         if write_resp.json().get("code") != 0:
              print(f"Error writing doc content: {write_resp.json()}")
+             # 即使写入内容失败，文档也创建了，返回链接试试
+             # return f"https://feishu.cn/docx/{doc_id}" 
 
         doc_url = f"https://feishu.cn/docx/{doc_id}"
         print(f"Doc created: {doc_url}")
@@ -132,6 +142,7 @@ def create_feishu_doc(token, title, content):
     except Exception as e:
         print(f"Failed to create doc: {e}")
         return ""
+
 def fetch_wechat_content(url):
     """爬虫：抓取微信文章正文"""
     session = create_session_with_retries()
