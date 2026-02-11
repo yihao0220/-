@@ -27,12 +27,11 @@ feishu_api_base = "https://open.feishu.cn/open-apis"
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 改成这个！
+        model = genai.GenerativeModel('gemini-1.5-flash-latest') 
     except Exception as e:
         print(f"Gemini Init Error: {e}")
         model = None
-else:
-    model = None
 
 # --- Helper Functions ---
 
@@ -84,56 +83,57 @@ def summarize_with_gemini(text):
 def create_feishu_doc(token, title, content):
     """创建飞书文档并写入内容"""
     if not content or len(content) < 10:
-        print("DEBUG: Content too short, skipping doc creation.")
         return ""
 
     print(f"Creating Feishu Doc: {title}...")
     
-    # 1. 创建空文档 (使用 requests 直接请求)
+    # 1. 创建空文档
     create_url = f"{feishu_api_base}/docx/v1/documents"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {token}", 
+        "Content-Type": "application/json; charset=utf-8" # 显式指定 charset
+    }
     payload = {"title": title}
     
     try:
-        resp = requests.post(create_url, headers=headers, json=payload)
+        # 使用 verify=True 确保 SSL 正常
+        resp = requests.post(create_url, headers=headers, json=payload, timeout=10)
         
-        # --- 调试：打印飞书原始返回 ---
-        # print(f"DEBUG: Create Doc Response: {resp.text}") 
-        
-        resp_json = resp.json()
+        # 调试：如果有问题，打印出来
+        if resp.status_code != 200:
+            print(f"Feishu API Error (Create): {resp.status_code} - {resp.text}")
+            return ""
+            
+        try:
+            resp_json = resp.json()
+        except ValueError:
+            print(f"Feishu Response Not JSON: {resp.text}")
+            return ""
+
         if resp_json.get("code") != 0:
             print(f"Error creating doc: {resp_json}")
             return ""
         
         doc_id = resp_json["data"]["document"]["document_id"]
         
-        # 2. 写入内容
+        # 2. 写入内容 (简化：只写前 5000 字，防止超时)
         blocks_url = f"{feishu_api_base}/docx/v1/documents/{doc_id}/blocks/children"
         
-        # 简单清洗内容，移除不可见字符
+        # 移除不可见字符
         clean_content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', content)
         clean_content = re.sub(r'\n\s*\n', '\n\n', clean_content)
         
-        # 分段写入
-        text_chunks = [clean_content[i:i+3000] for i in range(0, len(clean_content), 3000)]
-        
-        children = []
-        for chunk in text_chunks:
-            children.append({
-                "block_type": 2, # Text block
-                "text": {"elements": [{"text_run": {"content": chunk}}]}
-            })
+        # 构造一个简单的文本块
+        children = [{
+            "block_type": 2, 
+            "text": {"elements": [{"text_run": {"content": clean_content[:4000]}}]} # 先只写4000字，稳一点
+        }]
             
         block_payload = {"children": children}
-        write_resp = requests.post(blocks_url, headers=headers, json=block_payload)
+        write_resp = requests.post(blocks_url, headers=headers, json=block_payload, timeout=10)
         
-        # --- 调试：打印写入返回 ---
-        # print(f"DEBUG: Write Block Response: {write_resp.text}")
-
         if write_resp.json().get("code") != 0:
              print(f"Error writing doc content: {write_resp.json()}")
-             # 即使写入内容失败，文档也创建了，返回链接试试
-             # return f"https://feishu.cn/docx/{doc_id}" 
 
         doc_url = f"https://feishu.cn/docx/{doc_id}"
         print(f"Doc created: {doc_url}")
@@ -142,6 +142,7 @@ def create_feishu_doc(token, title, content):
     except Exception as e:
         print(f"Failed to create doc: {e}")
         return ""
+
 
 def fetch_wechat_content(url):
     """爬虫：抓取微信文章正文"""
