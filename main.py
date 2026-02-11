@@ -88,7 +88,7 @@ def create_feishu_doc(token, title, content):
         return ""
 
     print(f"Creating Feishu Doc: {title}...")
-    session = create_session_with_retries()
+    # ！！！这里不用 session 了，用 requests ！！！
     
     # 1. 创建空文档
     create_url = f"{feishu_api_base}/docx/v1/documents"
@@ -96,7 +96,8 @@ def create_feishu_doc(token, title, content):
     payload = {"title": title}
     
     try:
-        resp = session.post(create_url, headers=headers, json=payload)
+        # 使用 requests 直接发请求
+        resp = requests.post(create_url, headers=headers, json=payload)
         resp_json = resp.json()
         if resp_json.get("code") != 0:
             print(f"Error creating doc: {resp_json}")
@@ -107,7 +108,6 @@ def create_feishu_doc(token, title, content):
         # 2. 写入内容
         blocks_url = f"{feishu_api_base}/docx/v1/documents/{doc_id}/blocks/children"
         
-        # 简单清洗
         clean_content = re.sub(r'\n\s*\n', '\n\n', content)
         text_chunks = [clean_content[i:i+3000] for i in range(0, len(clean_content), 3000)]
         
@@ -119,8 +119,9 @@ def create_feishu_doc(token, title, content):
             })
             
         block_payload = {"children": children}
-        # 写入操作
-        write_resp = session.post(blocks_url, headers=headers, json=block_payload)
+        # 使用 requests 直接发请求
+        write_resp = requests.post(blocks_url, headers=headers, json=block_payload)
+        
         if write_resp.json().get("code") != 0:
              print(f"Error writing doc content: {write_resp.json()}")
 
@@ -131,7 +132,6 @@ def create_feishu_doc(token, title, content):
     except Exception as e:
         print(f"Failed to create doc: {e}")
         return ""
-
 def fetch_wechat_content(url):
     """爬虫：抓取微信文章正文"""
     session = create_session_with_retries()
@@ -247,7 +247,7 @@ def parse_feeds(feed_urls, existing_links, token):
                         ai_summary = content_text[:100] + "..."
                     
                     # === 关键修正：防止 429 ===
-                    print("Sleeping 12s to respect Gemini Rate Limit...")
+                    print("Sleeping 60s to respect Gemini Rate Limit...")
                     time.sleep(12) 
                 else:
                     ai_summary = content_text[:100] + "..."
