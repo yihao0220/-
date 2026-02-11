@@ -27,7 +27,7 @@ feishu_api_base = "https://open.feishu.cn/open-apis"
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
     except Exception as e:
         print(f"Gemini Init Error: {e}")
         model = None
